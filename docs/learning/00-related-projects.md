@@ -6,7 +6,8 @@
 ## 0.1 결론 먼저
 
 - **ggml을 C++23으로 완전히 다시 쓴 공개 프로젝트는 찾지 못했다.** 검색되는 것은 ggml 포크(수백 개), C++ 래퍼(ggml-easy), 다른 언어 재구현(Rust candle, Zig 계열), 또는 ggml과 무관한 C++ 추론 엔진(gemma.cpp, MLX)뿐이다.
-- **vcpkg에는 이미 `ggml`, `llama-cpp`, `whisper-cpp` 포트가 있다.** 2025-03-12에 머지된 [microsoft/vcpkg#43925](https://github.com/microsoft/vcpkg/pull/43925)로 추가되었고, `ggml` 포트는 blas/cuda/metal/opencl/openmp/vulkan 기능(feature)을 제공한다. 즉 "vcpkg로 ggml을 쓰는 것"은 해결된 문제이고, 우리의 차별점은 **라이브러리 자체의 언어와 설계**여야 한다.
+- **vcpkg에는 이미 `ggml`, `llama-cpp`, `whisper-cpp` 포트가 있다.** 2025-03-12에 머지된 [microsoft/vcpkg#43925](https://github.com/microsoft/vcpkg/pull/43925)로 추가되었고, `ggml` 포트는 blas/cuda/metal/opencl/openmp/vulkan 기능(feature)을 제공한다. 이 포트는 ggml을 **소비**하게 해 줄 뿐, ggml **내부**의 의존성(KleidiAI, CCCL, stb, CPU 기능 감지, SIMD 커널 등)은 여전히 벤더링·FetchContent·손코딩이다. 우리 목표는 그 내부를 vcpkg로 돌리는 것이며, 상세 목록은 9장이다.
+- **ggml이 손수 만든 바퀴 중 vcpkg 대체재가 있는 것**은 크게 빌드 인프라(즉시 교체 가능), 대배치 GEMM·Vulkan 메모리·벡터 초월함수(측정 후 교체), 아키텍처별 SIMD 계층(Highway 파일럿 필요)으로 나뉜다. 양자화 커널·그래프 할당기·스케줄러·GGUF는 대체재가 없다(9.2절 D).
 - ggml 상류(upstream)는 C11 + C++17을 **의도적으로 고정**하고 있다. `src/CMakeLists.txt:609`에 `target_compile_features(... c_std_11 cxx_std_17) # don't bump`라고 명시돼 있다. 따라서 C++23 채택은 상류에 기여할 수 없는 방향이고, 별도 프로젝트가 정당화된다.
 - 상류 자체도 C에서 C++로 서서히 이동 중이다. `src/` 최상위에서 순수 C 파일은 `ggml.c`, `ggml-alloc.c`, `ggml-quants.c` 세 개뿐이고, 백엔드·스케줄러·GGUF·최적화기·스레딩은 이미 `.cpp`다(전체 소스 기준 `.c` 91개 vs C++/CUDA/ObjC 443개). 단, 공개 API는 여전히 `extern "C"` C ABI다.
 
@@ -76,10 +77,22 @@
 
 ## 0.4 우리 프로젝트의 포지셔닝 제안
 
-1. **호환 대상은 API가 아니라 포맷과 수치다.** GGUF 파일과 양자화 블록 레이아웃(`src/ggml-common.h`)은 그대로 읽고, 결과는 ggml과 비트 단위 또는 허용 오차 내로 일치시킨다. ggml의 C API를 흉내 낼 필요는 없다.
-2. **ggml을 개발 의존성으로 vcpkg에서 가져와 차등 테스트(differential testing) 오라클로 쓴다.** `vcpkg.json`의 `"dependencies"`가 아닌 test feature에만 `ggml`을 넣는다.
-3. **C++23 표준만으로 안 되는 것 세 가지**를 미리 결정한다: SIMD(`std::simd`는 C++26), 반정밀도(`std::float16_t`는 컴파일러별 지원 차이), 플러그인 ABI(백엔드 동적 로딩은 여전히 `extern "C"` 심볼이 필요).
-4. 상류가 고정한 C++17 정책 때문에 우리 코드는 상류에 되돌릴 수 없다. 대신 **test-backend-ops의 테스트 케이스 정의**(`tests/test-backend-ops.cpp`)를 이식해 상류의 검증 자산을 재사용한다.
+두 갈래가 있고, 둘은 배타적이지 않다.
+
+**(A) 점진 경로 — ggml 포크의 의존성을 vcpkg로 (9장)**
+1. 코어 의존성 0개 원칙은 유지하고, 모든 외부 라이브러리는 feature 뒤에 둔다.
+2. 빌드 인프라(FetchContent, 벤더링 헤더, CPU 기능 감지, 테스트 하네스)부터 옮긴다. 성능 위험이 없다.
+3. 연산 계층은 **측정 후**에만 바꾼다. 특히 BLAS는 대배치에서만 이기므로 ggml의 `min_batch` 게이트를 유지한다.
+4. 아키텍처별 SIMD 36,800줄을 Highway로 대체할지는 양자화 내적 두 개의 파일럿 벤치마크로 결정한다.
+5. 양자화 커널·그래프 할당기·스케줄러·GGUF는 ggml의 핵심 가치이므로 그대로 둔다.
+
+**(B) 장기 경로 — C++23 재구현 (7장)**
+1. **호환 대상은 API가 아니라 포맷과 수치다.** GGUF 파일과 양자화 블록 레이아웃(`src/ggml-common.h`)은 그대로 읽고, 결과는 ggml과 비트 단위 또는 허용 오차 내로 일치시킨다.
+2. **ggml을 개발 의존성으로 vcpkg에서 가져와 차등 테스트(differential testing) 오라클로 쓴다.** test feature에만 `ggml`을 넣는다.
+3. **C++23 표준만으로 안 되는 것**을 미리 결정한다: SIMD(`std::simd`는 C++26), 반정밀도, 플러그인 ABI(`extern "C"`).
+4. 상류가 고정한 C++17 정책 때문에 우리 코드는 상류에 되돌릴 수 없다. 대신 **test-backend-ops의 테스트 케이스 정의**를 이식해 상류의 검증 자산을 재사용한다.
+
+(A)에서 vcpkg로 옮긴 의존성 구성은 (B)에서 그대로 재사용된다. 따라서 (A)를 먼저 하는 것이 합리적이다.
 
 ## 출처
 - vcpkg PR: https://github.com/microsoft/vcpkg/pull/43925

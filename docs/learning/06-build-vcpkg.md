@@ -52,6 +52,8 @@ portfile의 처리 순서:
 
 ## 6.3 새 프로젝트의 vcpkg 구성 (권장 뼈대)
 
+> ggml 포크가 실제로 가져올 의존성 목록(cpuinfo, kleidiai, highway, openblas/mkl/onednn, vulkan-memory-allocator, sleef, catch2 ...)과 feature 설계는 **9.3절의 `vcpkg.json` 초안**을 보라. 아래는 C++23 재구현(경로 B) 기준의 최소 예시다.
+
 ### 소비자로서: 매니페스트 모드
 
 ```json
