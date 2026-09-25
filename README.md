@@ -43,6 +43,7 @@ The main goal of `ggml` is to be a simple, portable, and efficient tensor librar
 - [The GGUF file format](docs/gguf.md)
 - [Introduction to ggml](https://huggingface.co/blog/introduction-to-ggml)
 - [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
+- [ggml 학습 가이드 (Korean study guide for a C++23/vcpkg re-implementation)](docs/learning/README.md)
 
 ## Contributing
 
